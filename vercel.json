@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "buildCommand": "cd frontend && npm install --legacy-peer-deps && npm run build",
+  "outputDirectory": "frontend/dist",
+  "functions": {
+    "backend/src/index.js": {
+      "includeFiles": "backend/src/**",
+      "maxDuration": 30
+    }
+  },
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/backend/src/index.js" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ]
+}
