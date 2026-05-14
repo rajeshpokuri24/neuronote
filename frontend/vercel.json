@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://neuronote-4o4a.vercel.app/api/:path*"
+    }
+  ]
+}
