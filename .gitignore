@@ -1,0 +1,26 @@
+.vs/
+.venv/
+
+backend/node_modules/
+frontend/node_modules/
+
+frontend/dist/
+
+# Environment files — never commit secrets
+backend/.env
+.env
+*.env
+
+# Local embedding model cache
+backend/models/
+
+# Claude Code project memory — private
+.claude/
+
+# Misc
+.DS_Store
+Thumbs.db
+*.log
+AUDIT.md
+extract_docx.ps1
+extract_pdf.py
