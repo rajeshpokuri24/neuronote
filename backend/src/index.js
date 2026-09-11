@@ -28,10 +28,14 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 
-// Rate limiting
+// Rate limiting — 200 req/15min is meant to bound production traffic per IP.
+// In local dev a single active session (React StrictMode double-invokes
+// effects, Progress page fires 5 parallel calls, etc.) can burn through that
+// in minutes and self-lockout with 429s, so relax it outside production.
+const isProd = process.env.NODE_ENV === 'production';
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
+  max: isProd ? 200 : 5000,
   message: 'Too many requests, please try again later.',
 });
 app.use('/api/', apiLimiter);
@@ -39,7 +43,7 @@ app.use('/api/', apiLimiter);
 // AI endpoints get stricter limits (Groq API rate limits)
 const aiLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 20,
+  max: isProd ? 20 : 200,
   message: 'AI request limit reached, please wait a moment.',
 });
 app.use('/api/notes/:id/process', aiLimiter);
