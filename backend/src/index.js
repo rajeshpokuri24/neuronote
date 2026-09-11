@@ -19,6 +19,13 @@ const embeddings = require('./services/embeddings');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Vercel sits in front of every request as a reverse proxy and sets
+// X-Forwarded-For — without this, express-rate-limit refuses to trust that
+// header (by design, to prevent IP spoofing) and throws on every request.
+if (process.env.VERCEL) {
+  app.set('trust proxy', 1);
+}
+
 // Middleware
 app.use(cors({
   origin: process.env.NODE_ENV === 'production'
