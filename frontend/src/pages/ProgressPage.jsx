@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   BarChart2, Brain, Target, TrendingUp, Calendar, Award,
-  BookOpen, RotateCcw, Flame, Clock, Activity
+  BookOpen, RotateCcw, Flame, Clock, Activity, Gauge
 } from 'lucide-react';
 import { userAPI, reviewAPI } from '../api';
 import { formatDistanceToNow, format } from 'date-fns';
@@ -19,6 +19,7 @@ export default function ProgressPage() {
   const [allItems, setAllItems] = useState([]);
   const [history, setHistory] = useState([]);
   const [activity, setActivity] = useState(null);
+  const [accuracy, setAccuracy] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
 
@@ -28,16 +29,18 @@ export default function ProgressPage() {
 
   const loadData = async () => {
     try {
-      const [statsRes, itemsRes, histRes, activityRes] = await Promise.all([
+      const [statsRes, itemsRes, histRes, activityRes, accuracyRes] = await Promise.all([
         userAPI.getStats(),
         reviewAPI.getAll(),
         reviewAPI.getHistory(),
         userAPI.getActivity(),
+        reviewAPI.getAccuracy(),
       ]);
       setStats(statsRes.data);
       setAllItems(itemsRes.data);
       setHistory(histRes.data);
       setActivity(activityRes.data);
+      setAccuracy(accuracyRes.data);
     } catch (err) {
       console.error(err);
     } finally {
@@ -197,6 +200,18 @@ export default function ProgressPage() {
             )}
           </div>
 
+          {/* Prediction accuracy */}
+          <div className="card">
+            <h3 className="text-white font-semibold mb-1 flex items-center gap-2">
+              <Gauge size={16} className="text-violet-400" />
+              Mastery Prediction Accuracy
+            </h3>
+            <p className="text-gray-500 text-xs mb-4">
+              How well the mastery model's "will I get this right?" predictions match your actual review outcomes.
+            </p>
+            <PredictionAccuracy accuracy={accuracy} />
+          </div>
+
           {/* Forgetting curve */}
           <div className="card">
             <h3 className="text-white font-semibold mb-1 flex items-center gap-2">
@@ -347,6 +362,42 @@ function MetricCard({ icon: Icon, label, value, color, suffix }) {
         {suffix && <span className="text-sm text-gray-400 ml-1">{suffix}</span>}
       </p>
       <p className="text-gray-400 text-sm">{label}</p>
+    </div>
+  );
+}
+
+function PredictionAccuracy({ accuracy }) {
+  if (!accuracy || !accuracy.predictionsScored) {
+    return <p className="text-gray-500 text-sm">Not enough review history yet — keep reviewing to build this up.</p>;
+  }
+
+  const { predictionsScored, itemsEvaluated, auc, accuracy: acc, brier, baseRate } = accuracy;
+  const lowSample = predictionsScored < 100;
+
+  return (
+    <div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="text-center">
+          <p className="text-2xl font-bold text-white">{auc !== null ? auc.toFixed(2) : '—'}</p>
+          <p className="text-gray-400 text-xs mt-1">AUC</p>
+        </div>
+        <div className="text-center">
+          <p className="text-2xl font-bold text-white">{Math.round(acc * 100)}%</p>
+          <p className="text-gray-400 text-xs mt-1">Accuracy (0.5 thresh)</p>
+        </div>
+        <div className="text-center">
+          <p className="text-2xl font-bold text-white">{brier.toFixed(2)}</p>
+          <p className="text-gray-400 text-xs mt-1">Brier score</p>
+        </div>
+        <div className="text-center">
+          <p className="text-2xl font-bold text-white">{Math.round(baseRate * 100)}%</p>
+          <p className="text-gray-400 text-xs mt-1">Base rate correct</p>
+        </div>
+      </div>
+      <p className="text-gray-600 text-xs mt-4">
+        Based on {predictionsScored} review{predictionsScored !== 1 ? 's' : ''} across {itemsEvaluated} concept{itemsEvaluated !== 1 ? 's' : ''}.
+        {lowSample && ' Sample size is still small — these numbers will stabilize as you review more.'}
+      </p>
     </div>
   );
 }

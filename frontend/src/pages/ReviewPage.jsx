@@ -9,6 +9,7 @@ import useStore from '../store/useStore';
 import FlashCard from '../components/Review/FlashCard';
 import ClozeCard from '../components/Review/ClozeCard';
 import Quiz from '../components/Review/Quiz';
+import ConceptHelpModal from '../components/Review/ConceptHelpModal';
 import MindMapView from '../components/MindMap/MindMapView';
 import toast from 'react-hot-toast';
 
@@ -34,6 +35,7 @@ export default function ReviewPage() {
   const [sessionMode, setSessionMode] = useState(false);
   const [sessionResults, setSessionResults] = useState([]);
   const [sessionComplete, setSessionComplete] = useState(false);
+  const [helpModal, setHelpModal] = useState(null);
 
   // Exam-mode state
   const [examDuration, setExamDuration] = useState(20);
@@ -86,6 +88,16 @@ export default function ReviewPage() {
     }
   };
 
+  const advanceSession = async (fromIdx) => {
+    const nextIdx = fromIdx + 1;
+    if (nextIdx >= sessionItems.length) {
+      setSessionComplete(true);
+    } else {
+      setCurrentIdx(nextIdx);
+      await loadContent(sessionItems[nextIdx].id, reviewType);
+    }
+  };
+
   const handleGrade = async (grade) => {
     const item = sessionItems[currentIdx];
     const startTime = Date.now();
@@ -102,16 +114,39 @@ export default function ReviewPage() {
         message: res.data.message,
       }]);
       removeReviewedItem(item.id);
-      const nextIdx = currentIdx + 1;
-      if (nextIdx >= sessionItems.length) {
-        setSessionComplete(true);
-      } else {
-        setCurrentIdx(nextIdx);
-        await loadContent(sessionItems[nextIdx].id, reviewType);
+
+      if (grade === 1 && (reviewType === 'flashcard' || reviewType === 'cloze')) {
+        // Didn't understand it — explain before moving on, instead of just rescheduling.
+        setHelpModal({ conceptName: item.concept_name, loading: true, explanation: null, checkQuestion: null });
+        const fromIdx = currentIdx;
+        reviewAPI.explain(item.id)
+          .then((res2) => {
+            setHelpModal({
+              conceptName: item.concept_name,
+              loading: false,
+              explanation: res2.data.explanation,
+              checkQuestion: res2.data.check_question,
+              fromIdx,
+            });
+          })
+          .catch(() => {
+            toast.error('Failed to load explanation');
+            setHelpModal(null);
+            advanceSession(fromIdx);
+          });
+        return;
       }
+
+      await advanceSession(currentIdx);
     } catch {
       toast.error('Failed to submit review');
     }
+  };
+
+  const handleContinueFromHelp = () => {
+    const fromIdx = helpModal?.fromIdx;
+    setHelpModal(null);
+    if (fromIdx !== undefined) advanceSession(fromIdx);
   };
 
   const handleSkip = () => {
@@ -655,6 +690,16 @@ export default function ReviewPage() {
             ) : null}
           </div>
         </div>
+
+        {helpModal && (
+          <ConceptHelpModal
+            conceptName={helpModal.conceptName}
+            loading={helpModal.loading}
+            explanation={helpModal.explanation}
+            checkQuestion={helpModal.checkQuestion}
+            onContinue={handleContinueFromHelp}
+          />
+        )}
       </div>
     );
   }

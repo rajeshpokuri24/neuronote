@@ -66,6 +66,12 @@ export default function Layout() {
     setUnreadCount((c) => Math.max(0, c - 1));
   };
 
+  const handleNotificationClick = (n) => {
+    handleMarkRead(n.id);
+    setBellOpen(false);
+    if (n.link) navigate(n.link);
+  };
+
   // Auto-close sidebar on mobile when navigating
   useEffect(() => {
     if (window.innerWidth < 768 && sidebarOpen) {
@@ -175,9 +181,8 @@ export default function Layout() {
             {bellOpen && (
               <NotificationDropdown
                 notifications={notifications}
-                onMarkRead={handleMarkRead}
+                onNotificationClick={handleNotificationClick}
                 onMarkAll={handleMarkAllRead}
-                onClose={() => setBellOpen(false)}
               />
             )}
           </div>
@@ -254,9 +259,8 @@ export default function Layout() {
             {bellOpen && (
               <NotificationDropdown
                 notifications={notifications}
-                onMarkRead={handleMarkRead}
+                onNotificationClick={handleNotificationClick}
                 onMarkAll={handleMarkAllRead}
-                onClose={() => setBellOpen(false)}
               />
             )}
           </div>
@@ -269,7 +273,7 @@ export default function Layout() {
   );
 }
 
-function NotificationDropdown({ notifications, onMarkRead, onMarkAll, onClose }) {
+function NotificationDropdown({ notifications, onNotificationClick, onMarkAll }) {
   const TYPE_LABELS = {
     due_reminder: { label: 'Due', color: 'text-violet-400' },
     forgetting_alert: { label: 'Forgetting', color: 'text-red-400' },
@@ -300,7 +304,7 @@ function NotificationDropdown({ notifications, onMarkRead, onMarkAll, onClose })
             return (
               <button
                 key={n.id}
-                onClick={() => onMarkRead(n.id)}
+                onClick={() => onNotificationClick(n)}
                 className={`w-full text-left px-4 py-3 hover:bg-navy-700 transition-colors ${n.read ? 'opacity-60' : ''}`}
               >
                 <div className="flex items-start gap-2">
@@ -310,7 +314,8 @@ function NotificationDropdown({ notifications, onMarkRead, onMarkAll, onClose })
                   <div className={n.read ? 'pl-4' : ''}>
                     <p className={`text-xs font-semibold ${meta.color} mb-0.5`}>{meta.label}</p>
                     <p className="text-gray-200 text-sm font-medium">{n.title}</p>
-                    {n.body && <p className="text-gray-500 text-xs mt-0.5 line-clamp-2">{n.body}</p>}
+                    {n.body && <p className="text-gray-500 text-xs mt-0.5">{n.body}</p>}
+                    {n.link && <p className="text-violet-400 text-xs mt-1">Tap to review →</p>}
                   </div>
                 </div>
               </button>

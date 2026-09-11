@@ -94,9 +94,9 @@ function nextInterval(S, desiredRetention = 0.9) {
  * Main FSRS scheduling function
  * Returns updated item state after a review.
  * desiredRetention: user-specific target (0.70–0.97).
+ * now: injectable clock, defaults to real time — lets simulations replay accelerated time.
  */
-function schedule(item, grade, w = DEFAULT_W, desiredRetention = 0.9) {
-  const now = new Date();
+function schedule(item, grade, w = DEFAULT_W, desiredRetention = 0.9, now = new Date()) {
   const elapsed = item.last_review
     ? Math.max(0, Math.round((now - new Date(item.last_review)) / (1000 * 60 * 60 * 24)))
     : 0;
@@ -158,7 +158,7 @@ function schedule(item, grade, w = DEFAULT_W, desiredRetention = 0.9) {
 
   reps += 1;
 
-  const dueDate = new Date();
+  const dueDate = new Date(now);
   dueDate.setDate(dueDate.getDate() + newScheduledDays);
 
   return {

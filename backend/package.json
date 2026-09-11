@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "db:setup": "node src/db/setup.js"
+    "db:setup": "node src/db/setup.js",
+    "storage:setup": "node src/db/setup-storage.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.105.4",

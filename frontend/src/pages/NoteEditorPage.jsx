@@ -3,12 +3,32 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   Save, Sparkles, ArrowLeft, Tag, Loader, Check, Brain,
   Clock, Upload, RotateCcw, ChevronDown, ChevronUp, Download,
-  GitBranch, Link2, Plus, X, FileText,
+  GitBranch, Link2, Plus, X, FileText, Lightbulb, BookmarkPlus,
 } from 'lucide-react';
-import { notesAPI } from '../api';
+import { notesAPI, conceptsAPI } from '../api';
 import useStore from '../store/useStore';
 import BlockEditor from '../components/Editor/BlockEditor';
+import ConceptTutorModal from '../components/Tutor/ConceptTutorModal';
 import toast from 'react-hot-toast';
+
+const MASTERY_LABEL = {
+  not_started: 'Not Started',
+  learning: 'Learning',
+  needs_review: 'Needs Review',
+  mastered: 'Mastered',
+};
+const MASTERY_COLOR = {
+  not_started: 'bg-gray-500/20 text-gray-400',
+  learning: 'bg-blue-500/20 text-blue-300',
+  needs_review: 'bg-orange-500/20 text-orange-300',
+  mastered: 'bg-green-500/20 text-green-300',
+};
+const MASTERY_BUTTON_LABEL = {
+  not_started: 'Start Learning',
+  learning: 'Continue Learning',
+  needs_review: 'Review Again',
+  mastered: 'Review Topic',
+};
 
 export default function NoteEditorPage() {
   const { id } = useParams();
@@ -447,6 +467,7 @@ export default function NoteEditorPage() {
               key={editorKey}
               initialBlocks={blocks}
               onChange={handleBlocksChange}
+              onUploadImage={(file) => notesAPI.uploadImage(id, file).then((res) => res.data.url)}
             />
 
             {/* Sub-notes (nested pages) */}
@@ -538,6 +559,9 @@ export default function NoteEditorPage() {
                 getComplexityLabel={getComplexityLabel}
                 getComplexityColor={getComplexityColor}
                 getStateColor={getStateColor}
+                onMasteryUpdate={(status) => {
+                  setConcepts((prev) => prev.map((c) => (c.id === concept.id ? { ...c, mastery_status: status } : c)));
+                }}
               />
             ))}
           </div>
@@ -565,10 +589,26 @@ const COMPLEXITY_BG = {
   'text-red-400': 'bg-red-400',
 };
 
-function ConceptCard({ concept, getComplexityLabel, getComplexityColor, getStateColor }) {
+function ConceptCard({ concept, getComplexityLabel, getComplexityColor, getStateColor, onMasteryUpdate }) {
   const [expanded, setExpanded] = useState(false);
+  const [tutorOpen, setTutorOpen] = useState(false);
+  const [queueing, setQueueing] = useState(false);
   const colorClass = getComplexityColor(concept.complexity_score);
   const bgClass = COMPLEXITY_BG[colorClass] || 'bg-gray-400';
+  const mastery = concept.mastery_status || 'not_started';
+
+  const handleAddToReview = async (e) => {
+    e.stopPropagation();
+    setQueueing(true);
+    try {
+      await conceptsAPI.queueForReview(concept.id);
+      toast.success(`"${concept.name}" added to your Review queue`);
+    } catch {
+      toast.error('Failed to add to review');
+    } finally {
+      setQueueing(false);
+    }
+  };
 
   return (
     <div className="bg-navy-800 rounded-lg border border-navy-700 overflow-hidden">
@@ -595,6 +635,9 @@ function ConceptCard({ concept, getComplexityLabel, getComplexityColor, getState
             ))}
           </div>
           <span className={`text-xs ${colorClass}`}>{getComplexityLabel(concept.complexity_score)}</span>
+          <span className={`text-xs px-1.5 py-0.5 rounded-full ${MASTERY_COLOR[mastery]}`}>
+            {MASTERY_LABEL[mastery]}
+          </span>
         </div>
       </button>
 
@@ -610,7 +653,33 @@ function ConceptCard({ concept, getComplexityLabel, getComplexityColor, getState
               ))}
             </div>
           )}
+          <div className="flex items-center gap-3 mt-3">
+            <button
+              onClick={(e) => { e.stopPropagation(); setTutorOpen(true); }}
+              className="flex items-center gap-1.5 text-xs text-violet-400 hover:text-violet-300 transition-colors"
+            >
+              <Lightbulb size={12} />
+              {MASTERY_BUTTON_LABEL[mastery]}
+            </button>
+            <button
+              onClick={handleAddToReview}
+              disabled={queueing}
+              className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-50"
+            >
+              <BookmarkPlus size={12} />
+              {queueing ? 'Adding...' : 'Add to Review'}
+            </button>
+          </div>
         </div>
+      )}
+
+      {tutorOpen && (
+        <ConceptTutorModal
+          conceptId={concept.id}
+          conceptName={concept.name}
+          onClose={() => setTutorOpen(false)}
+          onMasteryUpdate={onMasteryUpdate}
+        />
       )}
     </div>
   );

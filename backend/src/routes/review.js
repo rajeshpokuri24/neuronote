@@ -4,6 +4,7 @@ const { authenticate } = require('../middleware/auth');
 const claudeService = require('../services/claude');
 const fsrs = require('../services/fsrs');
 const contextForgetting = require('../services/contextForgetting');
+const { evaluateBkt } = require('../services/bktEval');
 
 const router = express.Router();
 
@@ -188,6 +189,43 @@ router.post('/:id/generate', authenticate, async (req, res) => {
       return res.status(503).json({ error: 'AI service unavailable. Check GROQ_API_KEY.' });
     }
     res.status(500).json({ error: 'Failed to generate review content: ' + err.message });
+  }
+});
+
+router.post('/:id/explain', authenticate, async (req, res) => {
+  try {
+    const { data: riData, error } = await supabase
+      .from('review_items')
+      .select('concept_id')
+      .eq('id', req.params.id)
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (error || !riData) {
+      return res.status(404).json({ error: 'Review item not found' });
+    }
+
+    const { data: conceptData } = await supabase
+      .from('concepts')
+      .select('name, description, notes(blocks)')
+      .eq('id', riData.concept_id)
+      .single();
+
+    if (!conceptData) {
+      return res.status(404).json({ error: 'Concept not found' });
+    }
+
+    const noteText = extractTextFromBlocks(conceptData.notes?.blocks);
+    const concept = { name: conceptData.name, description: conceptData.description };
+
+    const result = await claudeService.explainConcept(concept, noteText);
+    res.json(result);
+  } catch (err) {
+    console.error('Explain concept error:', err);
+    if (err.message?.includes('GROQ_API_KEY') || err.status === 401) {
+      return res.status(503).json({ error: 'AI service unavailable. Check GROQ_API_KEY.' });
+    }
+    res.status(500).json({ error: 'Failed to generate explanation: ' + err.message });
   }
 });
 
@@ -406,6 +444,16 @@ router.get('/history', authenticate, async (req, res) => {
   }
 });
 
+router.get('/accuracy', authenticate, async (req, res) => {
+  try {
+    const result = await evaluateBkt(req.user.id);
+    res.json(result);
+  } catch (err) {
+    console.error('Get accuracy error:', err);
+    res.status(500).json({ error: 'Failed to compute prediction accuracy' });
+  }
+});
+
 function getGradeMessage(grade, days) {
   const messages = {
     1: `Don't worry! We'll review this again soon.`,
@@ -420,6 +468,7 @@ function extractTextFromBlocks(blocks) {
   if (!blocks || !Array.isArray(blocks)) return '';
   return blocks
     .map((block) => {
+      if (block.type === 'image') return block.alt || '';
       if (typeof block.content === 'string') return block.content;
       if (Array.isArray(block.content)) return block.content.map((c) => c.text || '').join(' ');
       return '';

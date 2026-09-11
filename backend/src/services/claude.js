@@ -10,9 +10,9 @@ function getClient() {
 }
 
 // Primary model: best quality on Groq for structured tasks
-const PRIMARY_MODEL = 'llama-3.3-70b-versatile';
+const PRIMARY_MODEL = 'openai/gpt-oss-120b';
 // Fast model: higher TPM limit, for large notes and simple tasks
-const FAST_MODEL = 'llama-3.1-8b-instant';
+const FAST_MODEL = 'openai/gpt-oss-20b';
 
 // Max characters to send to AI (prevents TPM rate limit errors)
 // ~4 chars per token; Groq free tier limit is ~6000 TPM for 70b
@@ -24,14 +24,39 @@ function truncate(text, maxChars = MAX_CONTENT_CHARS) {
   return text.slice(0, maxChars) + '\n\n[Content truncated for processing...]';
 }
 
+function parseRetryDelayMs(err) {
+  const match = /try again in ([\d.]+)s/i.exec(err.message || '');
+  if (match) return Math.min(Math.ceil(parseFloat(match[1]) * 1000) + 500, 15000);
+  return 4000;
+}
+
 async function chat_completion(messages, model = PRIMARY_MODEL, maxTokens = 2048) {
   const groq = getClient();
-  const response = await groq.chat.completions.create({
+  const call = () => groq.chat.completions.create({
     model,
     max_tokens: maxTokens,
+    // gpt-oss models spend completion tokens on internal reasoning before the
+    // actual answer; keep that low so small maxTokens budgets aren't eaten
+    // entirely by reasoning, leaving nothing for the response itself.
+    reasoning_effort: 'low',
     messages,
   });
-  return response.choices[0].message.content.trim();
+
+  let response;
+  try {
+    response = await call();
+  } catch (err) {
+    // Groq's per-minute token limit is shared across every call this backend
+    // makes; a burst of requests (e.g. the tutor flow) can trip it. Wait out
+    // the model's own suggested delay and retry once before giving up.
+    if (err.status === 429) {
+      await new Promise((r) => setTimeout(r, parseRetryDelayMs(err)));
+      response = await call();
+    } else {
+      throw err;
+    }
+  }
+  return (response.choices[0].message.content || '').trim();
 }
 
 function parseJSON(text) {
@@ -149,6 +174,174 @@ Answers must be concise and accurate.`,
   ]);
 
   return result.flashcards;
+}
+
+/**
+ * Explain a concept the student failed to recall, then give one check
+ * question to test whether the explanation landed.
+ */
+async function explainConcept(concept, noteContext) {
+  const context = truncate(noteContext, MAX_CONTEXT_CHARS);
+  return completionWithJsonRetry([
+    {
+      role: 'system',
+      content: 'You are a patient, clear tutor. Return ONLY valid JSON.',
+    },
+    {
+      role: 'user',
+      content: `The student didn't remember this concept: "${concept.name}"
+Short description: ${concept.description}
+Context: ${context}
+
+Explain it clearly and simply, like teaching someone hearing it for the first time.
+Then write one short check question to test if they now understand it.
+
+Return ONLY this JSON:
+{
+  "explanation": "clear, thorough explanation in plain language (3-6 sentences), use an analogy if it helps",
+  "check_question": { "question": "short question", "answer": "concise correct answer" }
+}`,
+    },
+  ]);
+}
+
+/**
+ * Full AI-tutor session for a concept: a complete, exam-oriented explanation
+ * from the basics up, followed by one-at-a-time escalating questions, doubt
+ * clarification, and a final review — see the five functions below.
+ */
+async function tutorExplain(concept, noteContext) {
+  const context = truncate(noteContext, MAX_CONTEXT_CHARS);
+  // Long free-form markdown crammed into a JSON string field is fragile —
+  // the model frequently forgets to escape quotes/newlines in something
+  // this long, breaking JSON.parse. Ask for plain markdown directly instead.
+  const explanation = await chat_completion([
+    {
+      role: 'system',
+      content: 'You are an expert tutor preparing a student for an exam. Respond with markdown only — no JSON, no preamble.',
+    },
+    {
+      role: 'user',
+      content: `Teach this concept completely, from scratch, to a student preparing for an exam: "${concept.name}"
+Short description: ${concept.description}
+Context from their notes: ${context}
+
+Write a complete, step-by-step explanation:
+- Start from the basics — assume no prior knowledge of this specific concept.
+- Explain the meaning, purpose, and the important points.
+- Give simple, concrete examples.
+- If the topic is technical, include relevant formulas, algorithms (as pseudocode), a description of any useful diagram, advantages, disadvantages, and real applications.
+- Cover important subtopics — do not skip them.
+- Use markdown: headings, bullet lists, and code fences for formulas/pseudocode.`,
+    },
+  ], PRIMARY_MODEL, 2500);
+  return { explanation };
+}
+
+async function tutorNextQuestion(concept, noteContext, askedQuestions, difficulty) {
+  const context = truncate(noteContext, MAX_CONTEXT_CHARS);
+  const asked = (askedQuestions || []).join('\n- ') || '(none yet)';
+  return completionWithJsonRetry([
+    {
+      role: 'system',
+      content: 'You are an expert exam tutor writing one test question at a time. Return ONLY valid JSON.',
+    },
+    {
+      role: 'user',
+      content: `Concept: "${concept.name}"
+Description: ${concept.description}
+Context: ${context}
+
+Already asked (do not repeat these or close variants):
+- ${asked}
+
+Write ONE new ${difficulty} multiple-choice question to test understanding of this concept. Mix conceptual ("what/why/how") and application-based ("given this scenario...") styles across the session. Write 4 options — one clearly correct, three plausible but wrong distractors (not silly/obvious). Do not prefix options with "A)"/"B)" etc, just the option text.
+
+Return ONLY this JSON:
+{ "question": "the question text", "type": "conceptual", "options": ["option 1", "option 2", "option 3", "option 4"] }`,
+    },
+  ]);
+}
+
+async function tutorEvaluateAnswer(concept, question, userAnswer) {
+  return completionWithJsonRetry([
+    {
+      role: 'system',
+      content: 'You are a fair, encouraging exam tutor grading a short answer. Return ONLY valid JSON.',
+    },
+    {
+      role: 'user',
+      content: `Concept: "${concept.name}"
+Question: "${question}"
+Student's answer: "${userAnswer}"
+
+Judge whether the answer demonstrates real understanding (doesn't need to be word-perfect). Return ONLY this JSON:
+{
+  "correct": true,
+  "feedback": "1-3 sentences: what was right or wrong, and the correct idea",
+  "misunderstood": "the specific sub-point they got wrong, or null if correct"
+}`,
+    },
+  ]);
+}
+
+async function tutorDoubtClarify(concept, noteContext, doubtText) {
+  const context = truncate(noteContext, MAX_CONTEXT_CHARS);
+  return completionWithJsonRetry([
+    {
+      role: 'system',
+      content: 'You are a patient tutor resolving a specific point of confusion. Return ONLY valid JSON.',
+    },
+    {
+      role: 'user',
+      content: `Concept: "${concept.name}"
+Context: ${context}
+
+The student is confused about this specific point: "${doubtText}"
+
+Identify exactly what they're likely confused about, then explain just that part again, more simply than before, with a fresh example or analogy. Then write one small question to check they now get it.
+
+Return ONLY this JSON:
+{
+  "clarification": "simpler re-explanation of just this point, with an analogy or example",
+  "check_question": { "question": "short question", "answer": "concise correct answer" }
+}`,
+    },
+  ]);
+}
+
+async function tutorSummary(concept, transcript) {
+  const transcriptText = (transcript || [])
+    .map((t, i) => `${i + 1}. [${t.difficulty}] ${t.question} — ${t.correct ? 'correct' : 'incorrect'}`)
+    .join('\n');
+  return completionWithJsonRetry([
+    {
+      role: 'system',
+      content: 'You are an exam tutor giving a final review of a study session. Return ONLY valid JSON.',
+    },
+    {
+      role: 'user',
+      content: `Concept: "${concept.name}"
+Description: ${concept.description}
+
+This session's questions and results:
+${transcriptText || '(no questions asked)'}
+
+Write a final review:
+- Summarize the entire concept concisely.
+- List the most important points to remember.
+- List common mistakes students make with this concept (informed by what they got wrong above, if anything).
+- Write 3-5 final questions to check readiness for an exam.
+
+Return ONLY this JSON:
+{
+  "summary": "concise overall summary",
+  "key_points": ["point1", "point2"],
+  "common_mistakes": ["mistake1", "mistake2"],
+  "final_questions": ["question1", "question2", "question3"]
+}`,
+    },
+  ]);
 }
 
 /**
@@ -293,15 +486,16 @@ Be specific about the concepts and motivating. Keep it short.`,
 
 /**
  * Summarize an old conversation segment into 2-3 sentences for use as context.
+ * When `previousSummary` is given, folds it in so the summary accumulates
+ * across calls instead of resetting each time older messages are compacted.
  */
-async function summarizeConversation(conversationText) {
+async function summarizeConversation(conversationText, previousSummary = '') {
+  const prompt = previousSummary
+    ? `Here is a running summary of a conversation so far:\n${truncate(previousSummary, 1500)}\n\nUpdate it to also cover these new messages. Return one updated summary of the key topics and decisions in 3-4 sentences. Be concise and factual.\n\n${truncate(conversationText, 4000)}`
+    : `Summarize the key topics and decisions from this conversation in 2-3 sentences. Be concise and factual.\n\n${truncate(conversationText, 4000)}`;
+
   const text = await chat_completion(
-    [
-      {
-        role: 'user',
-        content: `Summarize the key topics and decisions from this conversation in 2-3 sentences. Be concise and factual.\n\n${truncate(conversationText, 4000)}`,
-      },
-    ],
+    [{ role: 'user', content: prompt }],
     FAST_MODEL,
     200
   );
@@ -354,6 +548,12 @@ module.exports = {
   generateQuiz,
   generateCloze,
   generateMindMap,
+  explainConcept,
+  tutorExplain,
+  tutorNextQuestion,
+  tutorEvaluateAnswer,
+  tutorDoubtClarify,
+  tutorSummary,
   chat,
   generateStudyBriefing,
   summarizeConversation,

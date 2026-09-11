@@ -10,6 +10,7 @@
   "dependencies": {
     "@xyflow/react": "^12.3.6",
     "axios": "^1.6.8",
+    "d3-force": "^3.0.0",
     "date-fns": "^3.6.0",
     "lucide-react": "^0.378.0",
     "react": "^18.2.0",

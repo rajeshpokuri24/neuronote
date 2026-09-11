@@ -22,8 +22,12 @@ async function getEmbedder() {
       try {
         // @xenova/transformers is ESM-only; use dynamic import from CJS
         const { pipeline, env } = await import('@xenova/transformers');
-        // Cache models inside the backend dir so they persist across reinstalls
-        env.cacheDir = path.join(__dirname, '..', '..', 'models');
+        // Cache models inside the backend dir so they persist across reinstalls.
+        // On Vercel the deployment bundle is read-only except /tmp, so use that
+        // instead — the cache just won't survive across cold starts there.
+        env.cacheDir = process.env.VERCEL
+          ? '/tmp/models'
+          : path.join(__dirname, '..', '..', 'models');
         env.allowLocalModels = true;
         embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
           quantized: true,

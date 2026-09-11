@@ -22,6 +22,17 @@ const upload = multer({
   },
 });
 
+const IMAGE_BUCKET = 'note-images';
+const uploadImage = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error('Only JPEG, PNG, GIF, and WEBP images are supported'));
+  },
+});
+
 // Search notes by title or tag (block content search requires pgvector RPC)
 router.get('/search', authenticate, async (req, res) => {
   try {
@@ -242,9 +253,14 @@ router.post('/:id/upload', authenticate, upload.single('file'), async (req, res)
     if (ext === '.txt') {
       extractedText = req.file.buffer.toString('utf-8');
     } else if (ext === '.pdf') {
-      const pdfParse = require('pdf-parse');
-      const data = await pdfParse(req.file.buffer);
-      extractedText = data.text;
+      const { PDFParse } = require('pdf-parse');
+      const parser = new PDFParse({ data: req.file.buffer });
+      try {
+        const result = await parser.getText();
+        extractedText = result.text;
+      } finally {
+        await parser.destroy();
+      }
     } else if (ext === '.docx' || ext === '.doc') {
       const mammoth = require('mammoth');
       const result = await mammoth.extractRawText({ buffer: req.file.buffer });
@@ -289,6 +305,49 @@ router.post('/:id/upload', authenticate, upload.single('file'), async (req, res)
   } catch (err) {
     console.error('Upload error:', err);
     res.status(500).json({ error: 'Failed to process file: ' + err.message });
+  }
+});
+
+router.post('/:id/upload-image', authenticate, uploadImage.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image uploaded' });
+    }
+
+    const { data: note, error: noteError } = await supabase
+      .from('notes')
+      .select('id')
+      .eq('id', req.params.id)
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (noteError || !note) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+
+    const ext = path.extname(req.file.originalname).toLowerCase() || '.jpg';
+    const storagePath = `${req.user.id}/${req.params.id}/${Date.now()}${ext}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from(IMAGE_BUCKET)
+      .upload(storagePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        upsert: false,
+      });
+
+    if (uploadError) {
+      console.error('Image storage upload error:', uploadError);
+      return res.status(502).json({ error: 'Failed to store image' });
+    }
+
+    const { data: publicUrlData } = supabase.storage
+      .from(IMAGE_BUCKET)
+      .getPublicUrl(storagePath);
+
+    res.json({ url: publicUrlData.publicUrl });
+  } catch (err) {
+    console.error('Image upload error:', err);
+    res.status(500).json({ error: 'Failed to upload image: ' + err.message });
   }
 });
 
@@ -386,7 +445,7 @@ router.post('/:id/process', authenticate, async (req, res) => {
         savedConcepts.push(newConcept);
 
         const reviewItem = fsrs.createReviewItem(conceptId, req.user.id, concept.complexity_score, userProfile);
-        await supabase.from('review_items').upsert(
+        const { error: reviewItemError } = await supabase.from('review_items').upsert(
           {
             user_id: req.user.id,
             concept_id: conceptId,
@@ -401,6 +460,9 @@ router.post('/:id/process', authenticate, async (req, res) => {
           },
           { onConflict: 'user_id,concept_id', ignoreDuplicates: true }
         );
+        if (reviewItemError) {
+          console.warn('[notes] review_item upsert error:', reviewItemError.message);
+        }
       }
 
       if (conceptVec) {
@@ -569,6 +631,7 @@ function extractTextFromBlocks(blocks) {
   if (!blocks || !Array.isArray(blocks)) return '';
   return blocks
     .map((block) => {
+      if (block.type === 'image') return block.alt || '';
       if (typeof block.content === 'string') return block.content;
       if (Array.isArray(block.content)) return block.content.map((c) => c.text || '').join(' ');
       return '';

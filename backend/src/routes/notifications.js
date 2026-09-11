@@ -8,7 +8,7 @@ router.get('/', authenticate, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('notifications')
-      .select('id, type, title, body, read, created_at')
+      .select('id, type, title, body, link, read, created_at')
       .eq('user_id', req.user.id)
       .order('read', { ascending: true })
       .order('created_at', { ascending: false })
@@ -71,11 +71,11 @@ router.delete('/', authenticate, async (req, res) => {
   }
 });
 
-async function createNotification(userId, type, title, body = null) {
+async function createNotification(userId, type, title, body = null, link = null) {
   try {
     await supabase
       .from('notifications')
-      .insert({ user_id: userId, type, title, body });
+      .insert({ user_id: userId, type, title, body, link });
   } catch (err) {
     console.error('[notifications] insert failed:', err.message);
   }

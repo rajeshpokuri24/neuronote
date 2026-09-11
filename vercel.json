@@ -15,5 +15,9 @@
     { "src": "/api/(.*)", "dest": "/backend/src/index.js" },
     { "handle": "filesystem" },
     { "src": "/(.*)", "dest": "/index.html" }
+  ],
+  "crons": [
+    { "path": "/api/cron/due-reminders", "schedule": "0 8 * * *" },
+    { "path": "/api/cron/forgetting-alerts", "schedule": "0 18 * * *" }
   ]
 }

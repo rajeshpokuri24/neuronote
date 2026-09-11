@@ -12,7 +12,8 @@ const reviewRoutes = require('./routes/review');
 const chatRoutes = require('./routes/chat');
 const conceptsRoutes = require('./routes/concepts');
 const notificationsRoutes = require('./routes/notifications');
-const { createNotification } = require('./routes/notifications');
+const cronRoutes = require('./routes/cron');
+const { sendDueReminders, sendForgettingAlerts } = require('./jobs/notifications');
 const embeddings = require('./services/embeddings');
 
 const app = express();
@@ -53,6 +54,7 @@ app.use('/api/review', reviewRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/concepts', conceptsRoutes);
 app.use('/api/notifications', notificationsRoutes);
+app.use('/api/cron', cronRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -75,123 +77,43 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// FSRS retention constants
-const DECAY = -0.5;
-const FACTOR = Math.pow(0.9, 1 / DECAY) - 1;
+// Locally (and on any other long-lived host) node-cron drives the daily jobs
+// directly. On Vercel the process isn't long-lived, so these are also exposed
+// as HTTP routes (see routes/cron.js) that Vercel Cron hits on the same
+// schedule — see the "crons" entry in the root vercel.json.
+if (!process.env.VERCEL) {
+  cron.schedule('0 8 * * *', sendDueReminders);
+  cron.schedule('0 18 * * *', sendForgettingAlerts);
+}
 
-// Daily cron at 8 AM — insert due-review notifications for every user
-cron.schedule('0 8 * * *', async () => {
-  try {
-    const now = new Date().toISOString();
-    const { data: dueItems } = await supabase
-      .from('review_items')
-      .select('user_id')
-      .or(`due_date.lte.${now},state.eq.new`);
-
-    // Group by user_id in JS
-    const userCounts = {};
-    (dueItems || []).forEach((ri) => {
-      userCounts[ri.user_id] = (userCounts[ri.user_id] || 0) + 1;
-    });
-
-    const twenty = new Date(Date.now() - 20 * 3600 * 1000).toISOString();
-    for (const [userId, count] of Object.entries(userCounts)) {
-      if (count === 0) continue;
-
-      const { data: existing } = await supabase
-        .from('notifications')
-        .select('id')
-        .eq('user_id', userId)
-        .eq('type', 'due_reminder')
-        .gte('created_at', twenty)
-        .limit(1);
-      if (existing && existing.length > 0) continue;
-
-      await createNotification(
-        userId,
-        'due_reminder',
-        `${count} concept${count > 1 ? 's' : ''} due for review`,
-        'Open NeuroNote to keep your memory sharp. Your retention drops the longer you wait.'
-      );
-    }
-
-    const userCount = Object.keys(userCounts).length;
-    if (userCount > 0) {
-      console.log(`[cron] Sent due-review notifications to ${userCount} user(s)`);
-    }
-  } catch (e) {
-    console.error('[cron] Notification send failed:', e.message);
-  }
+// Warm the embedding model in the background so the first user request
+// doesn't eat the cold-start cost. Failures are silent — RAG just stays off.
+embeddings.warmup().then(() => {
+  if (embeddings.isAvailable()) console.log('[embeddings] model warm');
 });
 
-// Forgetting-alert cron at 6 PM — warn users about items with very low retention
-cron.schedule('0 18 * * *', async () => {
-  try {
-    const { data: atRiskItems } = await supabase
-      .from('review_items')
-      .select('user_id, last_review, stability')
-      .in('state', ['review', 'relearning'])
-      .not('last_review', 'is', null);
+// Only bind a port when run directly (`node src/index.js` / `npm run dev`).
+// When Vercel's @vercel/node builder imports this file as a serverless
+// function, it uses the exported `app` directly and must not see a listener.
+if (require.main === module) {
+  app.listen(PORT, async () => {
+    // Reset any 'new' items that have a future due_date — they should always be due now
+    try {
+      const now = new Date().toISOString();
+      await supabase
+        .from('review_items')
+        .update({ due_date: now })
+        .eq('state', 'new')
+        .gt('due_date', now);
+    } catch (e) { /* non-fatal */ }
 
-    // Compute retention in JS; flag items below 50%
-    const userCounts = {};
-    (atRiskItems || []).forEach((item) => {
-      const elapsedDays = (Date.now() - new Date(item.last_review).getTime()) / 86400000;
-      const stability = item.stability || 1;
-      const ret = Math.pow(1 + FACTOR * elapsedDays / stability, DECAY);
-      if (ret < 0.5) {
-        userCounts[item.user_id] = (userCounts[item.user_id] || 0) + 1;
-      }
-    });
-
-    const twenty = new Date(Date.now() - 20 * 3600 * 1000).toISOString();
-    for (const [userId, cnt] of Object.entries(userCounts)) {
-      if (cnt < 3) continue;
-
-      const { data: recent } = await supabase
-        .from('notifications')
-        .select('id')
-        .eq('user_id', userId)
-        .eq('type', 'forgetting_alert')
-        .gte('created_at', twenty)
-        .limit(1);
-      if (recent && recent.length > 0) continue;
-
-      await createNotification(
-        userId,
-        'forgetting_alert',
-        `${cnt} concept${cnt > 1 ? 's are' : ' is'} fading fast`,
-        'Your retention is below 50% on several topics. Review them now to prevent forgetting.'
-      );
-    }
-  } catch (e) {
-    console.error('[cron] Forgetting alert failed:', e.message);
-  }
-});
-
-app.listen(PORT, async () => {
-  // Reset any 'new' items that have a future due_date — they should always be due now
-  try {
-    const now = new Date().toISOString();
-    await supabase
-      .from('review_items')
-      .update({ due_date: now })
-      .eq('state', 'new')
-      .gt('due_date', now);
-  } catch (e) { /* non-fatal */ }
-
-  console.log(`\n🧠 NeuroNote Backend running on http://localhost:${PORT}`);
-  console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
-  console.log(`\nSetup checklist:`);
-  console.log(`  1. Copy .env.example to .env and fill in values`);
-  console.log(`  2. Run: npm run db:setup`);
-  console.log(`  3. Start frontend: cd ../frontend && npm run dev\n`);
-
-  // Warm the embedding model in the background so the first user request
-  // doesn't eat the cold-start cost. Failures are silent — RAG just stays off.
-  embeddings.warmup().then(() => {
-    if (embeddings.isAvailable()) console.log('[embeddings] model warm');
+    console.log(`\n🧠 NeuroNote Backend running on http://localhost:${PORT}`);
+    console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
+    console.log(`\nSetup checklist:`);
+    console.log(`  1. Copy .env.example to .env and fill in values`);
+    console.log(`  2. Run: npm run db:setup`);
+    console.log(`  3. Start frontend: cd ../frontend && npm run dev\n`);
   });
-});
+}
 
 module.exports = app;

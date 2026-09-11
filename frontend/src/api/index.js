@@ -61,6 +61,11 @@ export const notesAPI = {
     form.append('file', file);
     return api.post(`/notes/${id}/upload`, form, { timeout: 60000 });
   },
+  uploadImage: (id, file) => {
+    const form = new FormData();
+    form.append('image', file);
+    return api.post(`/notes/${id}/upload-image`, form, { timeout: 60000 });
+  },
   getChildren: (id) => api.get(`/notes/${id}/children`),
   getBacklinks: (id) => api.get(`/notes/${id}/backlinks`),
   setParent: (id, parent_id) => api.put(`/notes/${id}/parent`, { parent_id }),
@@ -71,15 +76,18 @@ export const reviewAPI = {
   getDue: () => api.get('/review/due'),
   getAll: () => api.get('/review/all'),
   generate: (id, type) => api.post(`/review/${id}/generate`, { type }),
+  explain: (id) => api.post(`/review/${id}/explain`),
   submit: (id, data) => api.post(`/review/${id}/submit`, data),
   getHistory: () => api.get('/review/history'),
   getForecast: (days = 14) => api.get(`/review/forecast?days=${days}`),
+  getAccuracy: () => api.get('/review/accuracy'),
 };
 
 // Chat
 export const chatAPI = {
   sendMessage: (data) => api.post('/chat/message', data),
   getHistory: () => api.get('/chat/history'),
+  getSummaryStatus: () => api.get('/chat/summary'),
   clearHistory: () => api.delete('/chat/history'),
   getBriefing: () => api.get('/chat/briefing'),
 };
@@ -88,8 +96,18 @@ export const chatAPI = {
 export const conceptsAPI = {
   getAll: () => api.get('/concepts'),
   getGraph: (limit = 200) => api.get(`/concepts/graph?limit=${limit}`),
+  rebuildEdges: () => api.post('/concepts/rebuild-edges'),
   getNeighbors: (id, k = 8) => api.get(`/concepts/${id}/neighbors?k=${k}`),
   search: (query, k = 8) => api.post('/concepts/search', { query, k }),
+  tutorExplain: (id) => api.post(`/concepts/${id}/tutor/explain`),
+  tutorQuestion: (id, askedQuestions, difficulty) =>
+    api.post(`/concepts/${id}/tutor/question`, { askedQuestions, difficulty }),
+  tutorEvaluate: (id, question, userAnswer) =>
+    api.post(`/concepts/${id}/tutor/evaluate`, { question, userAnswer }),
+  tutorDoubt: (id, doubtText) => api.post(`/concepts/${id}/tutor/doubt`, { doubtText }),
+  tutorSummary: (id, transcript) => api.post(`/concepts/${id}/tutor/summary`, { transcript }),
+  updateMastery: (id, status) => api.patch(`/concepts/${id}/mastery`, { status }),
+  queueForReview: (id) => api.post(`/concepts/${id}/queue-for-review`),
 };
 
 // Notifications

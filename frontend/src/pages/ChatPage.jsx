@@ -13,6 +13,7 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(true);
   const [selectedNotes, setSelectedNotes] = useState([]);
   const [showNoteSelector, setShowNoteSelector] = useState(false);
+  const [summaryCutoff, setSummaryCutoff] = useState(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -32,6 +33,13 @@ export default function ChatPage() {
       // First time, no history
     } finally {
       setLoading(false);
+    }
+
+    try {
+      const res = await chatAPI.getSummaryStatus();
+      if (res.data.has_summary) setSummaryCutoff(res.data.covered_through_at);
+    } catch {
+      // Non-critical — just skip the divider
     }
   };
 
@@ -190,9 +198,16 @@ export default function ChatPage() {
             </div>
           </div>
         ) : (
-          messages.map((msg) => (
+          messages.map((msg, idx) => (
+            <div key={msg.id || msg.created_at}>
+            {summaryCutoff && msg.created_at > summaryCutoff && !(messages[idx - 1]?.created_at > summaryCutoff) && (
+              <div className="flex items-center gap-2 my-2">
+                <div className="flex-1 h-px bg-navy-700" />
+                <span className="text-gray-600 text-xs">Earlier messages summarized</span>
+                <div className="flex-1 h-px bg-navy-700" />
+              </div>
+            )}
             <div
-              key={msg.id || msg.created_at}
               className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
             >
               <div
@@ -224,6 +239,7 @@ export default function ChatPage() {
                   <p className="text-sm">{msg.content}</p>
                 )}
               </div>
+            </div>
             </div>
           ))
         )}

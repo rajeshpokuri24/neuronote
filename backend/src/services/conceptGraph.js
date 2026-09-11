@@ -11,8 +11,11 @@ const embeddings = require('./embeddings');
 const retrieval = require('./retrieval');
 
 const DEDUP_THRESHOLD = 0.85;
-const EDGE_THRESHOLD = 0.55;
-const MAX_NEIGHBORS = 4;
+// MiniLM-L6 embeddings on short concept name+description pairs rarely exceed
+// ~0.5-0.6 cosine similarity even for genuinely related concepts within the
+// same note — 0.55 was cutting off nearly every real relationship.
+const EDGE_THRESHOLD = 0.35;
+const MAX_NEIGHBORS = 5;
 
 async function findDuplicate(userId, conceptName, conceptDescription) {
   if (!(await retrieval.isVectorReady())) return null;
@@ -91,7 +94,7 @@ async function getUserGraph(userId, { limit = 200 } = {}) {
   const [{ data: nodesData }, { data: edgesData }] = await Promise.all([
     supabase
       .from('concepts')
-      .select('id, name, complexity_score, note_id, review_items(state, stability, due_date)')
+      .select('id, name, description, complexity_score, note_id, notes(title), review_items(state, stability, due_date)')
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
       .limit(limit),
@@ -107,11 +110,13 @@ async function getUserGraph(userId, { limit = 200 } = {}) {
     id: n.id,
     data: {
       label: n.name,
+      description: n.description,
       complexity: n.complexity_score,
       state: n.review_items?.[0]?.state,
       stability: n.review_items?.[0]?.stability,
       due_date: n.review_items?.[0]?.due_date,
       note_id: n.note_id,
+      note_title: n.notes?.title,
     },
     position: { x: 0, y: 0 },
   }));
@@ -135,10 +140,43 @@ async function getUserGraph(userId, { limit = 200 } = {}) {
   return { nodes, edges };
 }
 
+/**
+ * Recompute edges for every one of a user's concepts.
+ *
+ * linkNeighbors() only ever runs once, at the moment a concept is first
+ * created — so two concepts created in different note-processing passes
+ * never get compared against each other, leaving the graph sparser than it
+ * should be as more notes are processed over time. This walks every concept
+ * that has an embedding and re-links it, catching those gaps.
+ */
+async function rebuildAllEdges(userId) {
+  if (!(await retrieval.isVectorReady())) return { edgesWritten: 0, conceptsProcessed: 0 };
+
+  const { data: concepts } = await supabase
+    .from('concepts')
+    .select('id, embedding')
+    .eq('user_id', userId)
+    .not('embedding', 'is', null);
+
+  let edgesWritten = 0;
+  for (const c of concepts || []) {
+    // Supabase returns pgvector columns as their text form ("[0.1,0.2,...]"),
+    // not a JS array — linkNeighbors needs a real array to re-serialize it.
+    let vec = c.embedding;
+    if (typeof vec === 'string') {
+      try { vec = JSON.parse(vec); } catch { continue; }
+    }
+    // eslint-disable-next-line no-await-in-loop
+    edgesWritten += await linkNeighbors(userId, c.id, vec);
+  }
+  return { edgesWritten, conceptsProcessed: (concepts || []).length };
+}
+
 module.exports = {
   findDuplicate,
   setConceptEmbedding,
   linkNeighbors,
+  rebuildAllEdges,
   getUserGraph,
   DEDUP_THRESHOLD,
   EDGE_THRESHOLD,

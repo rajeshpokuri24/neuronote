@@ -19,36 +19,51 @@ router.post('/message', authenticate, async (req, res) => {
       .eq('id', req.user.id)
       .single();
 
-    const { data: historyData } = await supabase
-      .from('chat_messages')
-      .select('id, role, content')
+    const { data: summaryRow } = await supabase
+      .from('chat_summaries')
+      .select('summary_text, covered_through_at')
       .eq('user_id', req.user.id)
-      .order('created_at', { ascending: false })
-      .limit(30);
+      .maybeSingle();
 
-    let chatHistory = (historyData || []).reverse();
+    let historyQuery = supabase
+      .from('chat_messages')
+      .select('id, role, content, created_at')
+      .eq('user_id', req.user.id)
+      .order('created_at', { ascending: true });
+    if (summaryRow?.covered_through_at) {
+      historyQuery = historyQuery.gt('created_at', summaryRow.covered_through_at);
+    }
+    const { data: uncoveredData } = await historyQuery;
+    let uncovered = uncoveredData || [];
 
-    // Summarize old messages if history is long
-    if (chatHistory.length > 20) {
-      const toSummarize = chatHistory.slice(0, chatHistory.length - 10);
-      const recent = chatHistory.slice(chatHistory.length - 10);
+    // Raw history is never deleted (GET /history always shows everything);
+    // only the LLM-facing context gets compacted into a rolling summary.
+    let summaryText = summaryRow?.summary_text || '';
+
+    if (uncovered.length > 20) {
+      const toSummarize = uncovered.slice(0, uncovered.length - 10);
+      const recent = uncovered.slice(uncovered.length - 10);
       try {
-        const summaryText = toSummarize
+        const batchText = toSummarize
           .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
           .join('\n');
-        const summary = await claudeService.summarizeConversation(summaryText);
-        chatHistory = [
-          { role: 'system', content: `[Earlier conversation summary]: ${summary}` },
-          ...recent,
-        ];
-        const oldIds = toSummarize.map((m) => m.id);
-        if (oldIds.length > 0) {
-          await supabase.from('chat_messages').delete().in('id', oldIds);
-        }
+        summaryText = await claudeService.summarizeConversation(batchText, summaryText);
+        const coveredThroughAt = toSummarize[toSummarize.length - 1].created_at;
+
+        await supabase.from('chat_summaries').upsert(
+          { user_id: req.user.id, summary_text: summaryText, covered_through_at: coveredThroughAt, updated_at: new Date().toISOString() },
+          { onConflict: 'user_id' }
+        );
+
+        uncovered = recent;
       } catch {
-        chatHistory = chatHistory.slice(-10);
+        uncovered = uncovered.slice(-10);
       }
     }
+
+    const chatHistory = summaryText
+      ? [{ role: 'system', content: `[Earlier conversation summary]: ${summaryText}` }, ...uncovered]
+      : uncovered;
 
     let notesContext = '';
     let ragSources = [];
@@ -150,12 +165,29 @@ router.delete('/history', authenticate, async (req, res) => {
       .from('chat_messages')
       .delete()
       .eq('user_id', req.user.id);
-
     if (error) throw error;
+
+    await supabase.from('chat_summaries').delete().eq('user_id', req.user.id);
+
     res.json({ success: true });
   } catch (err) {
     console.error('Clear chat error:', err);
     res.status(500).json({ error: 'Failed to clear chat history' });
+  }
+});
+
+router.get('/summary', authenticate, async (req, res) => {
+  try {
+    const { data } = await supabase
+      .from('chat_summaries')
+      .select('covered_through_at')
+      .eq('user_id', req.user.id)
+      .maybeSingle();
+
+    res.json({ has_summary: !!data, covered_through_at: data?.covered_through_at || null });
+  } catch (err) {
+    console.error('Get chat summary error:', err);
+    res.status(500).json({ error: 'Failed to fetch summary status' });
   }
 });
 

@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { Plus, GripVertical, Trash2, Hash, List, Code, Type, Quote, Minus } from 'lucide-react';
+import { Plus, GripVertical, Trash2, Hash, List, Code, Type, Quote, Minus, Image as ImageIcon, Upload } from 'lucide-react';
 
 const BLOCK_TYPES = {
   paragraph: { icon: Type, label: 'Text', placeholder: 'Start writing...' },
@@ -12,13 +12,14 @@ const BLOCK_TYPES = {
   code: { icon: Code, label: 'Code', placeholder: 'Code block...' },
   quote: { icon: Quote, label: 'Quote', placeholder: 'Quote...' },
   divider: { icon: Minus, label: 'Divider', placeholder: '' },
+  image: { icon: ImageIcon, label: 'Image', placeholder: '' },
 };
 
 function createBlock(type = 'paragraph', content = '') {
-  return { id: uuidv4(), type, content };
+  return { id: uuidv4(), type, content, ...(type === 'image' ? { url: '', alt: '' } : {}) };
 }
 
-export default function BlockEditor({ initialBlocks = [], onChange, readOnly = false }) {
+export default function BlockEditor({ initialBlocks = [], onChange, readOnly = false, onUploadImage }) {
   const [blocks, setBlocks] = useState(
     initialBlocks.length > 0 ? initialBlocks : [createBlock()]
   );
@@ -26,7 +27,10 @@ export default function BlockEditor({ initialBlocks = [], onChange, readOnly = f
   const [showTypeMenu, setShowTypeMenu] = useState(null);
   const [dragId, setDragId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
+  const [uploadingId, setUploadingId] = useState(null);
+  const [uploadError, setUploadError] = useState(null);
   const inputRefs = useRef({});
+  const fileInputRefs = useRef({});
 
   useEffect(() => {
     if (initialBlocks.length > 0) {
@@ -86,9 +90,28 @@ export default function BlockEditor({ initialBlocks = [], onChange, readOnly = f
   };
 
   const handleTypeChange = (blockId, type) => {
-    updateBlock(blockId, { type, content: blocks.find((b) => b.id === blockId)?.content || '' });
+    const existing = blocks.find((b) => b.id === blockId);
+    updateBlock(blockId, {
+      type,
+      content: existing?.content || '',
+      ...(type === 'image' ? { url: existing?.url || '', alt: existing?.alt || '' } : {}),
+    });
     setShowTypeMenu(null);
     setTimeout(() => inputRefs.current[blockId]?.focus(), 50);
+  };
+
+  const handleImageFile = async (blockId, file) => {
+    if (!file || !onUploadImage) return;
+    setUploadError(null);
+    setUploadingId(blockId);
+    try {
+      const url = await onUploadImage(file);
+      updateBlock(blockId, { url });
+    } catch (err) {
+      setUploadError({ blockId, message: 'Failed to upload image. Please try again.' });
+    } finally {
+      setUploadingId(null);
+    }
   };
 
   // Drag-and-drop handlers
@@ -166,6 +189,96 @@ export default function BlockEditor({ initialBlocks = [], onChange, readOnly = f
                 <button
                   onClick={() => deleteBlock(block.id)}
                   className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-all"
+                >
+                  <Trash2 size={14} />
+                </button>
+              )}
+            </div>
+          );
+        }
+
+        if (block.type === 'image') {
+          return (
+            <div
+              key={block.id}
+              draggable={!readOnly}
+              onDragStart={(e) => handleDragStart(e, block.id)}
+              onDragOver={(e) => handleDragOver(e, block.id)}
+              onDrop={(e) => handleDrop(e, block.id)}
+              onDragEnd={handleDragEnd}
+              className={`group relative flex items-start gap-2 rounded-lg transition-all ${
+                isDragging ? 'opacity-30' : ''
+              } ${isDragOver ? 'border-t-2 border-violet-500' : 'border-t-2 border-transparent'}`}
+            >
+              {!readOnly && (
+                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity pt-1.5 flex-shrink-0">
+                  <button
+                    className="text-gray-600 hover:text-gray-400 cursor-grab active:cursor-grabbing"
+                    title="Drag to reorder"
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    <GripVertical size={14} />
+                  </button>
+                  <button
+                    onClick={() => addBlock(block.id)}
+                    className="text-gray-600 hover:text-violet-400 transition-colors"
+                    title="Add block"
+                  >
+                    <Plus size={14} />
+                  </button>
+                </div>
+              )}
+
+              <div className="flex-1">
+                {block.url ? (
+                  <div className="space-y-2">
+                    <img
+                      src={block.url}
+                      alt={block.alt || ''}
+                      className="max-w-full rounded-lg border border-navy-600"
+                    />
+                    {!readOnly && (
+                      <input
+                        value={block.alt || ''}
+                        onChange={(e) => updateBlock(block.id, { alt: e.target.value })}
+                        placeholder="Alt text (optional)"
+                        className="w-full bg-transparent text-xs text-gray-500 focus:outline-none placeholder-gray-600"
+                      />
+                    )}
+                  </div>
+                ) : (
+                  <div className="border-2 border-dashed border-navy-600 rounded-lg p-6 flex flex-col items-center gap-2">
+                    <ImageIcon size={20} className="text-gray-600" />
+                    {!readOnly && (
+                      <>
+                        <button
+                          onClick={() => fileInputRefs.current[block.id]?.click()}
+                          disabled={uploadingId === block.id}
+                          className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-violet-400 transition-colors disabled:opacity-50"
+                        >
+                          <Upload size={14} />
+                          {uploadingId === block.id ? 'Uploading...' : 'Upload image'}
+                        </button>
+                        <input
+                          ref={(el) => { fileInputRefs.current[block.id] = el; }}
+                          type="file"
+                          accept="image/jpeg,image/png,image/gif,image/webp"
+                          className="hidden"
+                          onChange={(e) => handleImageFile(block.id, e.target.files?.[0])}
+                        />
+                      </>
+                    )}
+                  </div>
+                )}
+                {uploadError?.blockId === block.id && (
+                  <p className="text-red-400 text-xs mt-1">{uploadError.message}</p>
+                )}
+              </div>
+
+              {!readOnly && blocks.length > 1 && (
+                <button
+                  onClick={() => deleteBlock(block.id)}
+                  className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-all pt-1.5 flex-shrink-0"
                 >
                   <Trash2 size={14} />
                 </button>
